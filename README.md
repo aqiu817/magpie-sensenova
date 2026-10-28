@@ -35,10 +35,13 @@ plausible approaches do not work:
   cache key stays `sensenova/api key …hohj` either way.
 
 Older sign-ins stored the account under `metadata.username`, so `consoleAuthOf` still reads that spelling
-(and `account`) as a fallback; only new sign-ins get the naming benefit.
+(and `account`) as a fallback. Those accounts do not need re-signing in either — see below.
 
-**If you signed in before this behaviour existed**, your stored label is still the API-key one. Re-run
-`magpie plugin login sensenova` to set it.
+**An account signed in before this existed does not need re-signing in.** Magpie migrates the legacy
+`metadata.username` into `metadata.email` itself: the older entries here were observed going from
+`username` alone, to both fields present, to `email` alone, and the account row then renders the account
+name. Watching a real install, `sensenova · Free Plan · API key …HohJ` turned into
+`sensenova · Free Plan · Rina49` without a new sign-in.
 
 ---
 
@@ -328,12 +331,18 @@ magpie plugin add <path to this repository>
 magpie plugin login sensenova
 ```
 
-Sign-in asks three things:
+Sign-in asks three questions:
 
 1. **SenseNova API key** (required) — console → API-Key management. Without it the provider cannot make
    any request.
 2. **Account** (optional) — used to read the console's credit quota.
 3. **Password** (optional) — same.
+
+Questions 2 and 3 are the plugin's own, declared in its `prompts`. **Question 1 is Magpie's**: an `api`
+-type method gets its credential asked for and stored by the host, which is why this plugin does not declare
+a `key` prompt of its own. Earlier versions did, and asked for the same secret twice — the duplicate is
+gone, so a sign-in is now those three questions and nothing more. `placeholder` on the method is what
+Magpie shows for its own question.
 
 Leaving the last two blank is fine: the plugin falls back to `~/.sensenova-quota.json`, written on this
 machine by the `snquota` CLI.

@@ -25,7 +25,7 @@
  * @module magpie-sensenova
  */
 
-import { PROVIDER, ICON, apiKeyOf, consoleAuthOf, fellBack, normalizeKey, readAuth } from "./internal.mjs";
+import { PROVIDER, ICON, apiKeyOf, consoleAuthOf, fellBack, readAuth } from "./internal.mjs";
 import { FALLBACK_MODELS, NPM, createCatalog, toConfigModel, toProviderModel } from "./models.mjs";
 import { accountNameOf, QuotaError, readCredentials, readQuota, writeCredentials } from "./quota.mjs";
 import { fill, resolveLocale, strings as tableFor } from "./i18n.mjs";
@@ -245,14 +245,15 @@ export async function SenseNovaPlugin({ client } = {}, options = {}) {
       methods: [
         {
           type: "api",
-          label: "SenseNova API key",
+          label: t.methodLabel,
+          // The key question is Magpie's own: for an `api` method it asks for the
+          // credential itself and stores it, which is why the community plugins
+          // declare only their extra fields here. Declaring a `key` prompt as
+          // well asks the user for the same secret twice — reported by a user,
+          // and the reason a sign-in here wanted one more line of input than
+          // this array has entries.
+          placeholder: "sk-…",
           prompts: [
-            {
-              type: "text",
-              key: "key",
-              message: t.promptKey,
-              placeholder: "sk-…",
-            },
             {
               type: "text",
               // `email` rather than `username`: Magpie names an account from
@@ -272,23 +273,6 @@ export async function SenseNovaPlugin({ client } = {}, options = {}) {
               placeholder: t.placeholderPassword,
             },
           ],
-          async authorize(inputs) {
-            const key = normalizeKey(inputs?.key);
-            if (!key) {
-              throw new Error(t.keyRequired);
-            }
-            /**
-             * Nothing to name the account with here beyond the key.
-             *
-             * The account field is prompted under the key `email`, so its answer
-             * reaches Magpie's naming rule through `metadata.email` on its own —
-             * measured. Returning `accountId` or a `metadata` object from here
-             * does not help: `accountId` is documented for oauth results and was
-             * observed to do nothing for an api-type method, and a returned
-             * `metadata` is replaced by the prompt answers before it is stored.
-             */
-            return { type: "success", key };
-          },
         },
       ],
     },

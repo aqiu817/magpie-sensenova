@@ -51,12 +51,11 @@ const ZH = {
   loginNoPermission: "该账号没有权限",
   loginTooFrequent: "操作过于频繁",
 
-  promptKey: "SenseNova API Key（控制台 → API-Key 管理）",
+  methodLabel: "SenseNova API Key（控制台 → API-Key 管理）",
   promptAccount: "可选：SenseNova 账号，用来读取控制台积分额度（留空则读 snquota 已存的凭据）",
   promptPassword: "可选：账号密码（明文保存在本机 plugin-auth.json，仅用于读取额度）",
   placeholderAccount: "手机号 / 邮箱",
   placeholderPassword: "留空 = 不保存密码",
-  keyRequired: "SenseNova API Key 不能为空：没有它这个供应商无法发出任何请求。",
 };
 
 const EN = {
@@ -92,12 +91,11 @@ const EN = {
   loginNoPermission: "This account has no permission",
   loginTooFrequent: "Too many attempts",
 
-  promptKey: "SenseNova API key (console → API-Key management)",
+  methodLabel: "SenseNova API key (console → API-Key management)",
   promptAccount: "Optional: the SenseNova account used to read the console's credit quota (blank reads the credentials snquota already stored)",
   promptPassword: "Optional: the account password (stored in plaintext in this machine's plugin-auth.json, used only to read quota)",
   placeholderAccount: "phone / email",
   placeholderPassword: "blank = do not store a password",
-  keyRequired: "The SenseNova API key cannot be empty: without it this provider cannot make any request.",
 };
 
 const TABLES = { zh: ZH, en: EN };
