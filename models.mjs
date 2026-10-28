@@ -27,6 +27,29 @@ export const DEFAULT_TIMEOUT_MS = 15000;
 export const DEFAULT_REFRESH_HOURS = 6;
 
 /**
+ * Output ceilings measured from the API, in tokens.
+ *
+ * The catalogue's `max_output_length` is **not** the enforced ceiling. Asking for
+ * an impossible `max_tokens` makes the endpoint answer with its own valid range —
+ * `field MaxTokens invalid, should be in [1, 393216]` — and the upper bounds below
+ * are those answers. They matter: `deepseek-flash` accepts 384K while its catalogue
+ * entry claims 64K, so trusting the catalogue understated it sixfold, and a user
+ * asking exactly this question is why it was checked.
+ *
+ * The two DeepSeek entries differ by 3,216 tokens because that is what the endpoint
+ * reports (384×1024 versus 384×1000); the asymmetry is theirs, not a typo here. A
+ * model absent from this table falls back to the catalogue, which has been right
+ * for every model whose two numbers were compared.
+ */
+export const MEASURED_OUTPUT_LIMITS = {
+  "deepseek-flash": 393216,
+  "deepseek-v4.1-flash": 393216,
+  "deepseek-v4-flash": 384000,
+  "glm-5.2": 131072,
+  "sensenova-6.8-flash-lite": 65536,
+};
+
+/**
  * Fallbacks for a model the endpoint described without a context or output
  * ceiling. The endpoint does send both, so these should not be reached — they
  * exist so a malformed entry degrades instead of producing NaN.
@@ -59,7 +82,7 @@ export const FALLBACK_MODELS = [
     id: "deepseek-flash",
     name: "DeepSeek Flash",
     contextLength: 1048576,
-    maxCompletionTokens: 65536,
+    maxCompletionTokens: 393216,
     inputModalities: ["text"],
     outputModalities: ["text"],
     supportsTools: true,
@@ -123,6 +146,7 @@ export function normalizeModel(raw) {
       fallback?.contextLength ??
       DEFAULT_CONTEXT,
     maxCompletionTokens:
+      MEASURED_OUTPUT_LIMITS[id] ??
       positive(
         raw.max_output_length ??
           raw.max_completion_tokens ??
@@ -147,6 +171,18 @@ export function normalizeModel(raw) {
   };
 }
 
+/**
+ * A chat-completions endpoint can only serve models that write text.
+ *
+ * `/v1/models` lists more than chat models. `sensenova-u1.5-lite` advertises
+ * `output_modalities: ["image"]` — it draws infographics — and asking it for a
+ * completion answers 404 `model is not found`, so offering it in a chat picker
+ * only produces an error the user cannot explain. Its text-only sibling is listed
+ * the same way, which is why the filter is on the output modality rather than on
+ * the id.
+ */
+const writesText = (m) => (m.outputModalities ?? []).includes("text");
+
 /** Pull a model array out of whatever envelope the endpoint used. */
 export function extractModels(payload) {
   const rows = Array.isArray(payload)
@@ -156,7 +192,7 @@ export function extractModels(payload) {
       : Array.isArray(payload?.models)
         ? payload.models
         : [];
-  return rows.map(normalizeModel).filter(Boolean);
+  return rows.map(normalizeModel).filter((m) => m !== null && writesText(m));
 }
 
 /**

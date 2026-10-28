@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { FALLBACK_MODELS, extractModels, normalizeModel, toConfigModel, toProviderModel } from "../models.mjs";
+import { FALLBACK_MODELS, MEASURED_OUTPUT_LIMITS, extractModels, normalizeModel, toConfigModel, toProviderModel } from "../models.mjs";
 import { strings } from "../i18n.mjs";
 import {
   accountNameOf,
@@ -337,7 +337,7 @@ test("内置快照的数字与接口实际返回一致", () => {
   // 是为了让「快照被随手改成占位值」这件事无法悄悄发生。
   const want = {
     "sensenova-6.8-flash-lite": [262144, 65536, ["text", "image"]],
-    "deepseek-flash": [1048576, 65536, ["text"]],
+    "deepseek-flash": [1048576, 393216, ["text"]],
     "glm-5.2": [1048576, 131072, ["text"]],
     "kimi-k3": [1048576, 65536, ["text"]],
   };
@@ -354,4 +354,32 @@ test("没有档位可调时不编造 variants", () => {
   // 声明 temperature / stop 两个采样参数，没有 effort，所以这里必须是空的。
   const m = normalizeModel({ id: "kimi-k3", supported_features: ["tools", "reasoning"] });
   assert.deepEqual(toProviderModel(m, "sensenova").variants, {});
+});
+
+test("实测的输出上限覆盖目录里的 max_output_length", () => {
+  // 目录对 deepseek-flash 写 65,536，而接口的 MaxTokens 校验说能到 393,216。
+  // 用户正是拿着「官方 384K」来问这个数字的，所以诚实值是后者。
+  const m = normalizeModel({ id: "deepseek-flash", context_length: 1048576, max_output_length: 65536 });
+  assert.equal(m.maxCompletionTokens, MEASURED_OUTPUT_LIMITS["deepseek-flash"]);
+  assert.equal(m.maxCompletionTokens, 393216);
+});
+
+test("没测过的模型仍以目录为准", () => {
+  const m = normalizeModel({ id: "kimi-k3", max_output_length: 65536 });
+  assert.equal(m.maxCompletionTokens, 65536);
+});
+
+test("写不出文本的模型不进对话模型清单", () => {
+  // sensenova-u1.5-lite 会出现在 /v1/models 里，但 output_modalities 只有 image，
+  // chat/completions 对它返回 404 model is not found —— 列出来选中就报错。
+  const payload = {
+    data: [
+      { id: "glm-5.2", output_modalities: ["text"] },
+      { id: "sensenova-u1.5-lite", output_modalities: ["image"] },
+      { id: "sensenova-6.8-flash-lite", output_modalities: ["text"], input_modalities: ["text", "image"] },
+    ],
+  };
+  assert.deepEqual(extractModels(payload).map((m) => m.id), ["glm-5.2", "sensenova-6.8-flash-lite"]);
+  // 没有 output_modalities 时按文本处理，不能把老形状全过滤掉。
+  assert.deepEqual(extractModels([{ id: "unknown" }]).map((m) => m.id), ["unknown"]);
 });

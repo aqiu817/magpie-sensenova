@@ -506,23 +506,36 @@ the current lineup:
 
 | model | context | max output | input | features |
 | --- | --- | --- | --- | --- |
-| `deepseek-v4-flash` | 1,048,576 | 65,536 | text | tools, json_mode, reasoning |
-| `glm-5.2` | 1,048,576 | **131,072** | text | tools, json_mode, reasoning |
-| `sensenova-6.8-flash-lite` | 262,144 | 65,536 | text, image | tools, json_mode, reasoning |
-| `sensenova-u1.5-lite` | 262,144 | 65,536 | text | tools, json_mode, reasoning (**output: image**) |
+| `deepseek-flash` | 1,048,576 | **393,216** | text | tools, json_mode, reasoning |
+| `deepseek-v4.1-flash` | 1,048,576 | **393,216** | text | tools, json_mode, reasoning |
+| `deepseek-v4-flash` | 1,048,576 | **384,000** | text | tools, json_mode, reasoning |
+| `glm-5.2` | 1,048,576 | 131,072 | text | tools, json_mode, reasoning |
 | `kimi-k3` | 1,048,576 | 65,536 | text | tools, json_mode, reasoning |
-| `deepseek-flash` | 1,048,576 | 65,536 | text | tools, json_mode, reasoning |
-| `deepseek-v4.1-flash` | 1,048,576 | 65,536 | text | tools, json_mode, reasoning |
+| `sensenova-6.8-flash-lite` | 262,144 | 65,536 | text, image | tools, json_mode, reasoning |
 
-Two earlier versions of this plugin got the card wrong, and both mistakes are worth naming because they are
-easy to repeat:
+Three corrections went into this table, each found by asking the endpoint rather than trusting a number:
 
-- The snapshot claimed 131,072 context and 32,768 output for all four models. The real ceilings are 262,144
-  or 1,048,576, and 65,536 — except `glm-5.2`, whose output ceiling is 131,072. That was an invented
-  number, wrong by up to a factor of four.
+- The snapshot claimed 131,072 context and 32,768 output for all four models. The real ceilings are
+  262,144 or 1,048,576 context, and 65,536 output — except `glm-5.2`, whose output ceiling is 131,072.
 - `normalizeModel` looked for `max_completion_tokens` / `max_output_tokens` and never read the name the
-  platform actually uses, **`max_output_length`**. So even with the live list in hand, every model came out
-  with a 32,768 output ceiling. Fixed, and pinned by a test that also asserts the snapshot's numbers.
+  platform uses, **`max_output_length`**. Even with the live list in hand, every model came out at a 32,768
+  output ceiling.
+- **The catalogue's `max_output_length` is not the enforced ceiling.** Ask for an impossible `max_tokens`
+  and the endpoint answers with its own valid range —
+  `field MaxTokens invalid, should be in [1, 393216]`. That range is the real ceiling, and it disagrees
+  with the catalogue for the DeepSeek models: `deepseek-flash` accepts **384K** while its catalogue entry
+  claims **64K**, so the card was understating it sixfold. `MEASURED_OUTPUT_LIMITS` in `models.mjs` holds
+  the upper bounds read this way; a model absent from it falls back to the catalogue. The two DeepSeek
+  numbers differ by 3,216 because the endpoint reports 384×1024 for one and 384×1000 for the other.
+
+`kimi-k3` is the one row still taken from the catalogue, because probing it kept answering
+`429 inference exceeds tpm/rpm limit` rather than the range. Treat its 65,536 as the catalogue's word, not
+a measurement.
+
+**One model is deliberately not listed.** `/v1/models` also offers `sensenova-u1.5-lite`, but its
+`output_modalities` is `["image"]` — it draws infographics — and `chat/completions` answers it with
+`404 model is not found`. This plugin only serves chat, so it filters the list on "writes text"; offering
+that model in a picker would only produce an error the user cannot explain.
 
 **Reasoning effort.** Magpie expresses selectable effort levels as `variants` — a map from level names
 (`low`/`high`/`xhigh`/`max`…) to the provider options for that level; other providers' entries in
@@ -550,6 +563,9 @@ fallback flag. Magpie also merges its own models.dev entry for `sensenova`, whic
   `/v1/models` fetch replaces them, since only that endpoint knows the new model's numbers.
 - No reasoning-effort selector: the platform exposes `reasoning` as a yes/no feature and nothing more, so
   `variants` is empty — see [Models](#models).
+- A large `max_tokens` can be refused before it is even attempted: the plan meters throughput per minute,
+  and asking for 65,536 tokens answered `429 inference exceeds tpm/rpm limit` on a quiet account. The
+  ceiling above says what the endpoint accepts, not what the plan will serve at any given moment.
 
 ---
 
@@ -621,7 +637,7 @@ are opt-in and not done.
 node --test test/*.test.mjs
 ```
 
-59 tests cover: mapping pools to windows (including the `used` percentage, `amount`, `limit`, `span`,
+62 tests cover: mapping pools to windows (including the `used` percentage, `amount`, `limit`, `span`,
 `resetsAt`, the dedicated pool's model scoping, and the granted balance); that `limit - amount`
 reproduces the console balance; that a window with an unknown usage is skipped rather than reported as
 zero; degradation when fields are missing; JWT expiry; refresh-token renewal; the error raised when
