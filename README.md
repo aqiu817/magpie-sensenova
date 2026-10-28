@@ -497,14 +497,44 @@ emits (`credit-usage-trend`'s `series[].model_id`):
 - `glm-5.2`
 - `kimi-k3`
 
-After sign-in, `provider.models` uses the API key to fetch the live list from `GET /v1/models` (that
-endpoint exists — it answers 401 without a key rather than 404). A live list is used when available;
-otherwise the plugin falls back and marks the list with Magpie's fallback flag. Magpie also merges its
-own models.dev entry for `sensenova`, which in practice adds `deepseek-v4-pro` and `deepseek-v4-flash`,
-two 1M-context models.
+After sign-in, `provider.models` uses the API key to fetch the live list from `GET /v1/models`. That
+endpoint is richer than its OpenAI-shaped neighbours suggest: it returns **`context_length`**,
+**`max_output_length`**, `input_modalities`, `output_modalities` and a **`supported_features`** list
+(`tools`, `json_mode`, `reasoning`) for every model. So the model card here is read off the platform, not
+guessed — the snapshot in `models.mjs` mirrors that response, and the table below is what it answers for
+the current lineup:
 
-Context length and output ceiling are not published anywhere in the platform's public documentation, so
-the built-in snapshot uses conservative placeholders; a live list that carries metadata overrides them.
+| model | context | max output | input | features |
+| --- | --- | --- | --- | --- |
+| `deepseek-v4-flash` | 1,048,576 | 65,536 | text | tools, json_mode, reasoning |
+| `glm-5.2` | 1,048,576 | **131,072** | text | tools, json_mode, reasoning |
+| `sensenova-6.8-flash-lite` | 262,144 | 65,536 | text, image | tools, json_mode, reasoning |
+| `sensenova-u1.5-lite` | 262,144 | 65,536 | text | tools, json_mode, reasoning (**output: image**) |
+| `kimi-k3` | 1,048,576 | 65,536 | text | tools, json_mode, reasoning |
+| `deepseek-flash` | 1,048,576 | 65,536 | text | tools, json_mode, reasoning |
+| `deepseek-v4.1-flash` | 1,048,576 | 65,536 | text | tools, json_mode, reasoning |
+
+Two earlier versions of this plugin got the card wrong, and both mistakes are worth naming because they are
+easy to repeat:
+
+- The snapshot claimed 131,072 context and 32,768 output for all four models. The real ceilings are 262,144
+  or 1,048,576, and 65,536 — except `glm-5.2`, whose output ceiling is 131,072. That was an invented
+  number, wrong by up to a factor of four.
+- `normalizeModel` looked for `max_completion_tokens` / `max_output_tokens` and never read the name the
+  platform actually uses, **`max_output_length`**. So even with the live list in hand, every model came out
+  with a 32,768 output ceiling. Fixed, and pinned by a test that also asserts the snapshot's numbers.
+
+**Reasoning effort.** Magpie expresses selectable effort levels as `variants` — a map from level names
+(`low`/`high`/`xhigh`/`max`…) to the provider options for that level; other providers' entries in
+`plugin-providers.json` carry them. SenseNova declares none: `/v1/models` lists only `temperature` and
+`stop`
+under `supported_sampling_parameters`, and its features are just `tools` / `json_mode` / `reasoning`. So
+this plugin reports `reasoning: true` (the models do think) and **`variants: {}` — no effort selector**,
+because there is nothing to select. If the platform later exposes one, `variants` is where it goes.
+
+A live list is used when available; otherwise the plugin falls back and marks the list with Magpie's
+fallback flag. Magpie also merges its own models.dev entry for `sensenova`, which is where
+`deepseek-v4-pro` comes from when it appears.
 
 ---
 
@@ -516,7 +546,10 @@ the built-in snapshot uses conservative placeholders; a live list that carries m
 - If the console token expires and all three renewal paths fail (refresh token revoked, cookie expired,
   wrong password), the account row shows an `error` asking you to sign in again.
 - The quota endpoint is a console-internal API rather than a public one, so a redesign may break it.
-- Model capability fields (context length and so on) are placeholders when there is no live list.
+- A model the platform adds after a release carries this plugin's default ceilings until the live
+  `/v1/models` fetch replaces them, since only that endpoint knows the new model's numbers.
+- No reasoning-effort selector: the platform exposes `reasoning` as a yes/no feature and nothing more, so
+  `variants` is empty — see [Models](#models).
 
 ---
 
@@ -588,7 +621,7 @@ are opt-in and not done.
 node --test test/*.test.mjs
 ```
 
-55 tests cover: mapping pools to windows (including the `used` percentage, `amount`, `limit`, `span`,
+59 tests cover: mapping pools to windows (including the `used` percentage, `amount`, `limit`, `span`,
 `resetsAt`, the dedicated pool's model scoping, and the granted balance); that `limit - amount`
 reproduces the console balance; that a window with an unknown usage is skipped rather than reported as
 zero; degradation when fields are missing; JWT expiry; refresh-token renewal; the error raised when

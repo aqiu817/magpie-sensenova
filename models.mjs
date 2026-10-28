@@ -26,23 +26,30 @@ export const DEFAULT_TIMEOUT_MS = 15000;
 /** How long a fetched list is trusted, in hours. */
 export const DEFAULT_REFRESH_HOURS = 6;
 
+/**
+ * Fallbacks for a model the endpoint described without a context or output
+ * ceiling. The endpoint does send both, so these should not be reached — they
+ * exist so a malformed entry degrades instead of producing NaN.
+ */
 const DEFAULT_CONTEXT = 131072;
 const DEFAULT_OUTPUT = 32768;
 
 /**
  * The models to declare before any network call.
  *
- * Capability fields are conservative placeholders: the live `/models` response
- * replaces them when it carries metadata, and the platform does not document
- * per-model context or output ceilings publicly. Only the ids and the
- * multimodal flag on Flash-Lite are taken from observed platform behaviour.
+ * Every number here is read off the platform's own `GET /v1/models` — it returns
+ * `context_length`, `max_output_length`, `input_modalities`, `output_modalities`
+ * and `supported_features` per model, so the snapshot mirrors that response
+ * rather than guessing. Re-read it when the platform adds models; the previous
+ * version of this table claimed 131072/32768 for all four, which was wrong by a
+ * factor of 4 on `glm-5.2`'s output ceiling alone.
  */
 export const FALLBACK_MODELS = [
   {
     id: "sensenova-6.8-flash-lite",
     name: "SenseNova 6.8 Flash Lite",
-    contextLength: DEFAULT_CONTEXT,
-    maxCompletionTokens: DEFAULT_OUTPUT,
+    contextLength: 262144,
+    maxCompletionTokens: 65536,
     inputModalities: ["text", "image"],
     outputModalities: ["text"],
     supportsTools: true,
@@ -51,8 +58,8 @@ export const FALLBACK_MODELS = [
   {
     id: "deepseek-flash",
     name: "DeepSeek Flash",
-    contextLength: DEFAULT_CONTEXT,
-    maxCompletionTokens: DEFAULT_OUTPUT,
+    contextLength: 1048576,
+    maxCompletionTokens: 65536,
     inputModalities: ["text"],
     outputModalities: ["text"],
     supportsTools: true,
@@ -61,8 +68,8 @@ export const FALLBACK_MODELS = [
   {
     id: "glm-5.2",
     name: "GLM 5.2",
-    contextLength: DEFAULT_CONTEXT,
-    maxCompletionTokens: DEFAULT_OUTPUT,
+    contextLength: 1048576,
+    maxCompletionTokens: 131072,
     inputModalities: ["text"],
     outputModalities: ["text"],
     supportsTools: true,
@@ -71,8 +78,8 @@ export const FALLBACK_MODELS = [
   {
     id: "kimi-k3",
     name: "Kimi K3",
-    contextLength: DEFAULT_CONTEXT,
-    maxCompletionTokens: DEFAULT_OUTPUT,
+    contextLength: 1048576,
+    maxCompletionTokens: 65536,
     inputModalities: ["text"],
     outputModalities: ["text"],
     supportsTools: true,
@@ -83,13 +90,20 @@ export const FALLBACK_MODELS = [
 const positive = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : undefined);
 const text = (v) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
 const list = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === "string") : undefined);
+/** Only a real boolean counts; `reasoning` is sometimes an object instead. */
+const bool = (v) => (typeof v === "boolean" ? v : undefined);
 
 /**
  * Normalize one raw model entry from any of the shapes the endpoint may use.
  *
- * The response format is not documented, so both OpenAI's `{data:[…]}` and a
- * bare array are accepted, and capability fields are read under either the
- * snake_case or camelCase spelling.
+ * The response format is not fully documented, so both OpenAI's `{data:[…]}` and
+ * a bare array are accepted, and capability fields are read under either the
+ * snake_case or camelCase spelling. SenseNova's own names matter here: it reports
+ * the output ceiling as **`max_output_length`** (not `max_completion_tokens`, not
+ * `max_output_tokens`) and its capabilities as a **`supported_features`** list
+ * containing `tools` / `json_mode` / `reasoning`. Missing either made every model
+ * look like it had a 32768 output ceiling and supported everything, which is
+ * exactly the kind of invented number a model card must not carry.
  *
  * @param {object} raw - one entry from the endpoint.
  * @returns {object|null} a normalized model, or null when it has no id.
@@ -99,6 +113,8 @@ export function normalizeModel(raw) {
   const id = text(raw.id) ?? text(raw.model_id) ?? text(raw.model);
   if (!id) return null;
   const fallback = FALLBACK_MODELS.find((m) => m.id === id);
+  const features = list(raw.supported_features ?? raw.supportedFeatures) ?? list(raw.features);
+  const has = (name) => (features ? features.includes(name) : undefined);
   return {
     id,
     name: text(raw.name) ?? text(raw.model_name) ?? fallback?.name ?? id,
@@ -107,7 +123,12 @@ export function normalizeModel(raw) {
       fallback?.contextLength ??
       DEFAULT_CONTEXT,
     maxCompletionTokens:
-      positive(raw.max_completion_tokens ?? raw.maxCompletionTokens ?? raw.max_output_tokens) ??
+      positive(
+        raw.max_output_length ??
+          raw.max_completion_tokens ??
+          raw.maxCompletionTokens ??
+          raw.max_output_tokens
+      ) ??
       fallback?.maxCompletionTokens ??
       DEFAULT_OUTPUT,
     inputModalities:
@@ -115,8 +136,14 @@ export function normalizeModel(raw) {
     outputModalities:
       list(raw.output_modalities ?? raw.outputModalities) ?? fallback?.outputModalities ?? ["text"],
     supportsTools:
-      raw.supports_tools ?? raw.supportsTools ?? raw.tool_call ?? fallback?.supportsTools ?? true,
-    reasoning: raw.reasoning ?? raw.supports_reasoning ?? fallback?.reasoning ?? true,
+      raw.supports_tools ??
+      raw.supportsTools ??
+      raw.tool_call ??
+      has("tools") ??
+      fallback?.supportsTools ??
+      true,
+    reasoning:
+      bool(raw.reasoning) ?? bool(raw.supports_reasoning) ?? has("reasoning") ?? fallback?.reasoning ?? true,
   };
 }
 

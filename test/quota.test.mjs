@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { extractModels, normalizeModel, toConfigModel, toProviderModel } from "../models.mjs";
+import { FALLBACK_MODELS, extractModels, normalizeModel, toConfigModel, toProviderModel } from "../models.mjs";
 import { strings } from "../i18n.mjs";
 import {
   accountNameOf,
@@ -306,4 +306,52 @@ test("accountNameOf 取不到时返回 undefined，不编一个", () => {
   assert.equal(accountNameOf({ access_token: jwt({ ext: {} }) }), undefined);
   assert.equal(accountNameOf({ access_token: jwt({ ext: { username: "   " } }) }), undefined);
   assert.equal(accountNameOf(undefined), undefined);
+});
+
+test("normalizeModel 读 SenseNova 自己的 max_output_length", () => {
+  // 回归：以前只认 max_completion_tokens / max_output_tokens，于是每个模型都退回
+  // 32,768 —— 而接口给的是 65,536，glm-5.2 更是 131,072。
+  // 用一个快照里没有的 id，否则回退值会把这个 bug 掩盖掉。
+  const m = normalizeModel({ id: "a-model-not-in-the-snapshot", context_length: 1048576, max_output_length: 4096 });
+  assert.equal(m.contextLength, 1048576, "上下文要认 context_length");
+  assert.equal(m.maxCompletionTokens, 4096, "输出上限要认 max_output_length");
+});
+
+test("normalizeModel 从 supported_features 推导能力，不一律当成 true", () => {
+  const rich = normalizeModel({ id: "x", supported_features: ["tools", "json_mode", "reasoning"] });
+  assert.equal(rich.supportsTools, true);
+  assert.equal(rich.reasoning, true);
+
+  // 只有 tools、没有 reasoning 的模型不能被说成会推理。
+  const plain = normalizeModel({ id: "y", supported_features: ["tools"] });
+  assert.equal(plain.supportsTools, true);
+  assert.equal(plain.reasoning, false);
+
+  // 显式字段优先于特性表。
+  const explicit = normalizeModel({ id: "z", supported_features: [], supports_tools: true });
+  assert.equal(explicit.supportsTools, true);
+});
+
+test("内置快照的数字与接口实际返回一致", () => {
+  // 取自 GET https://token.sensenova.cn/v1/models 的真实响应。写死在这里，
+  // 是为了让「快照被随手改成占位值」这件事无法悄悄发生。
+  const want = {
+    "sensenova-6.8-flash-lite": [262144, 65536, ["text", "image"]],
+    "deepseek-flash": [1048576, 65536, ["text"]],
+    "glm-5.2": [1048576, 131072, ["text"]],
+    "kimi-k3": [1048576, 65536, ["text"]],
+  };
+  for (const m of FALLBACK_MODELS) {
+    const [ctx, out, input] = want[m.id];
+    assert.equal(m.contextLength, ctx, `${m.id} 上下文`);
+    assert.equal(m.maxCompletionTokens, out, `${m.id} 输出上限`);
+    assert.deepEqual(m.inputModalities, input, `${m.id} 输入模态`);
+  }
+});
+
+test("没有档位可调时不编造 variants", () => {
+  // Magpie 的「推理强度」是 variants（以档位为键的选项对象）。SenseNova 的接口只
+  // 声明 temperature / stop 两个采样参数，没有 effort，所以这里必须是空的。
+  const m = normalizeModel({ id: "kimi-k3", supported_features: ["tools", "reasoning"] });
+  assert.deepEqual(toProviderModel(m, "sensenova").variants, {});
 });
