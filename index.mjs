@@ -27,7 +27,17 @@
 
 import { PROVIDER, ICON, apiKeyOf, consoleAuthOf, fellBack, readAuth } from "./internal.mjs";
 import { FALLBACK_MODELS, NPM, createCatalog, toConfigModel, toProviderModel } from "./models.mjs";
-import { accountNameOf, QuotaError, readCredentials, readQuota, writeCredentials } from "./quota.mjs";
+import {
+  accountNameOf,
+  credentialSlotOf,
+  isLegacyCredentials,
+  QuotaError,
+  readAccountCredentials,
+  readCredentials,
+  readQuota,
+  writeAccountCredentials,
+  writeCredentials,
+} from "./quota.mjs";
 import { fill, resolveLocale, strings as tableFor } from "./i18n.mjs";
 
 const DEFAULT_QUOTA_TTL_MS = 60_000;
@@ -63,34 +73,60 @@ export async function SenseNovaPlugin({ client } = {}, options = {}) {
     Object.fromEntries(models.map((m) => [m.id, toConfigModel(m)]));
 
   /**
-   * The credential pair for one account.
+   * The credentials for one account.
    *
-   * The console credentials come from the sign-in prompts when the user
-   * supplied them, and otherwise from the file the `snquota` CLI writes. The
-   * fallback matters because the console login is a multi-step OAuth flow that
-   * the CLI already drives, including keeping the token fresh; asking for the
-   * same account twice would be worse than reusing that file.
+   * Console tokens are per account, not per machine: quota is account-level, and one
+   * token belongs to one console account. They therefore live in that account's own
+   * slot of the shared file (see `readAccountCredentials`), and only the token's own
+   * account may read the CLI's single-account top-level record. Handing the top-level
+   * token to every account is what made several account rows show one and the same
+   * quota — the last account to sign in won, and `ensureToken` then short-circuited on
+   * its unexpired token instead of ever signing in as anyone else.
+   *
+   * The account and password still come from the sign-in prompts when supplied, and
+   * otherwise from the shared file, which is the single-account arrangement the CLI
+   * drives. `base` / `client_id` / `redirect_uri` stay file-level: they identify the
+   * deployment, not the account.
    */
-  const credentialsFor = (auth) => {
+  const credentialsFor = (auth, slot, file = readCredentials(opts.credentialsFile) ?? {}) => {
     const fromAuth = consoleAuthOf(auth);
-    const fromFile = readCredentials(opts.credentialsFile) ?? {};
+    const own = readAccountCredentials(file, slot);
     return {
-      base: fromFile.base,
-      client_id: fromFile.client_id,
-      redirect_uri: fromFile.redirect_uri,
-      access_token: fromFile.access_token,
-      refresh_token: fromFile.refresh_token,
-      expires_at: fromFile.expires_at,
-      cookie: fromAuth.cookie ?? fromFile.cookie,
-      username: fromAuth.username ?? fromFile.username,
-      password: fromAuth.password ?? fromFile.password,
-      iam_base: fromAuth.iamBase ?? fromFile.iam_base,
-      // Only the file is written back: a token minted here would otherwise
-      // silently replace the CLI's copy on the next read.
-      __writable: !fromAuth.username && !fromAuth.cookie,
+      base: own.base ?? file.base,
+      client_id: own.client_id ?? file.client_id,
+      redirect_uri: own.redirect_uri ?? file.redirect_uri,
+      // Not `file.access_token`: that is the CLI's account, possibly somebody else's.
+      access_token: own.access_token,
+      refresh_token: own.refresh_token,
+      expires_at: own.expires_at,
+      id_token: own.id_token,
+      cookie: fromAuth.cookie ?? own.cookie,
+      username: fromAuth.username ?? own.username ?? file.username,
+      password: fromAuth.password ?? own.password ?? file.password,
+      iam_base: fromAuth.iamBase ?? own.iam_base ?? file.iam_base,
+      __slot: slot,
+      // A renewal goes into the slot, and additionally back into the CLI's record when
+      // that record is the one this account has been reading, so the CLI's copy does
+      // not go stale for the single-account case.
+      __legacy: isLegacyCredentials(file, slot),
       __file: opts.credentialsFile,
     };
   };
+
+  /**
+   * Which slot an account's tokens belong in.
+   *
+   * The typed account names the slot. With none typed, the name carried by the file's
+   * single-account token is adopted instead — that keeps "leave the account fields
+   * blank and use what the `snquota` CLI stored" working, which is the common setup,
+   * while still refusing to hand one account's token to another: the moment a second
+   * account names itself, it gets its own slot and stops borrowing.
+   */
+  const slotOf = (auth, file) =>
+    credentialSlotOf({
+      name: consoleAuthOf(auth).username ?? accountNameOf(file),
+      key: apiKeyOf(auth),
+    });
 
   /** Cache quota per account so a polled hook costs one request a minute. */
   const quotaCache = new Map();
@@ -110,11 +146,16 @@ export async function SenseNovaPlugin({ client } = {}, options = {}) {
 
   const quotaFor = async (getAuth) => {
     const auth = await readAuth(getAuth);
-    const cacheKey = apiKeyOf(auth) ?? consoleAuthOf(auth).username ?? "sensenova";
+    const file = readCredentials(opts.credentialsFile) ?? {};
+    // The slot is part of the cache key: two sign-ins can share one API key while
+    // naming different accounts, and keying on the key alone would let the second row
+    // read the first row's figures.
+    const slot = slotOf(auth, file);
+    const cacheKey = `${apiKeyOf(auth) ?? ""}\u0000${slot ?? ""}`;
     const hit = quotaCache.get(cacheKey);
     if (hit && Date.now() - hit.at < opts.quotaTtlMs) return hit.value;
 
-    const cfg = credentialsFor(auth);
+    const cfg = credentialsFor(auth, slot, file);
     if (!cfg.access_token && !cfg.refresh_token && !cfg.cookie && !cfg.password) {
       const value = { error: t.noAccount };
       quotaCache.set(cacheKey, { at: Date.now(), value });
@@ -123,7 +164,12 @@ export async function SenseNovaPlugin({ client } = {}, options = {}) {
 
     try {
       const { quota, changed } = await readQuota(cfg, { scopeModel: opts.scopeModel, strings: t });
-      if (changed && cfg.__writable) writeCredentials(cfg, cfg.__file);
+      if (changed) {
+        // Its own slot always; the CLI's top-level record as well only when that was
+        // the record this account read from.
+        writeAccountCredentials(cfg, slot, cfg.__file);
+        if (cfg.__legacy) writeCredentials(cfg, cfg.__file);
+      }
       // 套餐名用接口给的（实际是 "Free Plan"），拿不到才退回通用叫法。
       const { plan, ...rest } = quota;
       const user = accountLabel(cfg);

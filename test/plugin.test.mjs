@@ -97,6 +97,18 @@ const POOL_USAGE = {
   ],
 };
 
+/** Temp credential files created by `usageWith`, removed when the file exits. */
+const TEMP_DIRS = [];
+process.on("exit", () => {
+  for (const dir of TEMP_DIRS) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {
+      /* best effort */
+    }
+  }
+});
+
 /** A JWT whose payload decodes, just enough to carry a claim. */
 const jwt = (payload) => `x.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.y`;
 
@@ -106,20 +118,34 @@ const jwt = (payload) => `x.${Buffer.from(JSON.stringify(payload)).toString("bas
  */
 async function usageWith(options, auth) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sensenova-"));
+  TEMP_DIRS.push(dir);
   const file = path.join(dir, "quota.json");
+  // `auth.file` seeds the whole payload (for slot layouts); otherwise it is the
+  // single-account record vector the CLI writes.
   fs.writeFileSync(
     file,
-    JSON.stringify({ base: "https://platform.sensenova.cn", access_token: auth.token, expires_at: 4102444800 })
+    JSON.stringify(
+      auth.file ?? {
+        base: "https://platform.sensenova.cn",
+        access_token: auth.token,
+        expires_at: 4102444800,
+      }
+    )
   );
 
   const plugin = await SenseNovaPlugin({}, { ...options, credentialsFile: file });
   const real = globalThis.fetch;
-  globalThis.fetch = async () => new Response(JSON.stringify(POOL_USAGE), { status: 200 });
+  const sent = [];
+  globalThis.fetch = async (_input, init) => {
+    // The token actually used is the evidence for "did the rows stay apart".
+    sent.push(new Headers(init?.headers).get("authorization"));
+    return new Response(JSON.stringify(POOL_USAGE), { status: 200 });
+  };
   try {
-    return await plugin.auth.usage(async () => ({ type: "api", key: "sk-test", metadata: auth.metadata }));
+    const usage = await plugin.auth.usage(async () => ({ type: "api", key: auth.key ?? "sk-test", metadata: auth.metadata }));
+    return Object.assign(usage, { __sent: sent, __file: file });
   } finally {
     globalThis.fetch = real;
-    fs.rmSync(dir, { recursive: true, force: true });
   }
 }
 
@@ -145,10 +171,59 @@ test("locale: zh 保持原样", async () => {
 
 test("账号行优先用 token 里的账号名，而不是登录时填的账号", async () => {
   // 只填 API Key 时用户拿不到名字；token 里带着它，所以账号行不必显示 API Key。
+  // token 放在该账号自己的槽位里：登录名 138… 与令牌里的 Ada 不是同一个名字，
+  // 顶层记录在这种不一致下不会被借用（见下面「不借用别人的令牌」）。
   const usage = await usageWith({ locale: "en" }, {
-    token: jwt({ ext: { username: "Ada" } }),
+    file: {
+      base: "https://platform.sensenova.cn",
+      accounts: {
+        "13800000000": { access_token: jwt({ ext: { username: "Ada" } }), expires_at: 4102444800 },
+      },
+    },
     metadata: { username: "13800000000" },
   });
+  assert.equal(usage.user, "Ada");
+  assert.equal(usage.__sent[0], `Bearer ${jwt({ ext: { username: "Ada" } })}`, "用的是自己槽位里的令牌");
+});
+
+test("两个账号各用自己的令牌，不会读到同一份", async () => {
+  // 多账号串台是这个 bug 的原始症状：以前顶层只有一份令牌，所有账号行都读它，
+  // 于是最后登录的账号赢，其余行显示同一份额度。
+  const a = jwt({ ext: { username: "acctA" } });
+  const b = jwt({ ext: { username: "acctB" } });
+  const file = {
+    base: "https://platform.sensenova.cn",
+    // 顶层还有一份（CLI 写的那份）。以前所有账号行都读它，这正是串台的原因，
+    // 所以夹具必须带上它，否则这个测试证明不了任何事。
+    access_token: a,
+    expires_at: 4102444800,
+    accounts: {
+      acctA: { access_token: a, expires_at: 4102444800 },
+      acctB: { access_token: b, expires_at: 4102444800 },
+    },
+  };
+  const rowA = await usageWith({ locale: "en" }, { file, metadata: { email: "acctA" } });
+  const rowB = await usageWith({ locale: "en" }, { file, metadata: { email: "acctB" } });
+  assert.equal(rowA.__sent[0], `Bearer ${a}`);
+  assert.equal(rowB.__sent[0], `Bearer ${b}`);
+  assert.notEqual(rowA.__sent[0], rowB.__sent[0], "两行必须用不同的令牌");
+});
+
+test("不借用别人账号的顶层令牌", async () => {
+  // 顶层记录属于 Ada；登录成另一个账号时不该拿它去读额度。
+  const usage = await usageWith({ locale: "en" }, {
+    token: jwt({ ext: { username: "Ada" } }),
+    metadata: { email: "someone-else" },
+  });
+  assert.equal(usage.__sent.length, 0, "不应发出任何请求");
+  assert.match(String(usage.error), /account/i);
+});
+
+test("没填账号时沿用顶层令牌里的账号名，保住单账号的老用法", async () => {
+  // 「留空则读 snquota 存的那份」必须继续可用：此时采用令牌自带的账号名作槽位。
+  const token = jwt({ ext: { username: "Ada" } });
+  const usage = await usageWith({ locale: "en" }, { token });
+  assert.equal(usage.__sent[0], `Bearer ${token}`);
   assert.equal(usage.user, "Ada");
 });
 
@@ -216,4 +291,16 @@ test("consoleAuthOf 认 email，也兼容旧的 username / account", async () =>
   );
   assert.equal(consoleAuthOf({ metadata: { email: "   " } }).username, undefined);
   assert.equal(consoleAuthOf(undefined).username, undefined);
+});
+
+test("老文件（无槽位）下，顶层令牌只借给账号名对得上的那一行", async () => {
+  // 这就是原始 bug 的最小场景：文件里只有一份令牌，两条账号行都想读它。
+  // 以前两条都读，于是都显示同一个账号的额度。
+  const token = jwt({ ext: { username: "acctA" } });
+  const matching = await usageWith({ locale: "en" }, { token, metadata: { email: "acctA" } });
+  assert.equal(matching.__sent[0], `Bearer ${token}`, "同名账号应当借用");
+
+  const stranger = await usageWith({ locale: "en" }, { token, metadata: { email: "acctB" } });
+  assert.equal(stranger.__sent.length, 0, "另一个账号不该读到这份令牌");
+  assert.match(String(stranger.error), /account/i);
 });

@@ -80,12 +80,15 @@ the plugin's sign-in prompt, or what you previously saved to `~/.sensenova-quota
 credentials from a browser, the system keychain, or another provider's sign-in**, and it does not write
 to any credential setting on SenseNova's servers.
 
-**One local file does get written, and it should be stated:** if the credentials came from
-`~/.sensenova-quota.json` — that is, you did not fill in the account fields and took the second route in
-5 — then after renewing a token the plugin **writes the new token back to that file**, so the CLI's copy
-does not go stale. In code the condition is "neither a username nor a cookie was supplied at sign-in";
-**supply either one and nothing is written back.** (The `credentialsFile` option only redirects the
-write; it does not turn it off.)
+**One local file does get written, and it should be stated:** console tokens live in
+`~/.sensenova-quota.json` under **that account's own entry**, `accounts.<account name>` — with the API
+key's fingerprint standing in when no account was named. Quota is account-level and one token belongs to
+one console account, so a single shared record could only ever represent whichever account signed in last,
+which is exactly what made several account rows show one and the same figure.
+
+The file's top-level record is the `snquota` CLI's single-account one: it is **read**, and refreshed only
+when it is the record this account has been reading, so the CLI's copy does not go stale in the one-account
+case. (The `credentialsFile` option only redirects where that happens; it does not turn it off.)
 
 ### 2. The password is stored in plaintext
 
@@ -249,8 +252,8 @@ through 4 go away with it.
   header and passes the body through to `token.sensenova.cn` (see the code in 7).
 - It does not cache prompts or responses.
 - It does not write to any credential setting on SenseNova's servers.
-- It does not write back to `~/.sensenova-quota.json`, **except** when the credentials came from that
-  file and a token was renewed (see the end of 1).
+- It writes to `~/.sensenova-quota.json` only its own per-account entries (`accounts.<account>`) plus,
+  when that is the record it read from, the CLI's top-level single-account record — nothing else.
 
 ---
 
@@ -463,6 +466,20 @@ So these are two different layers:
 | **Credit pool (what this plugin shows)** | Account-level | Shared by every key on the account; a key is an entry point, not a separate ledger |
 | **Usage records** | Per call | Each record carries its key, filterable and exportable by key |
 
+### More than one account
+
+Because the quota is account-level, each SenseNova account needs its own console token. They are kept in
+that account's own slot of the credentials file, keyed by the account name typed at sign-in (and by the API
+key's fingerprint when none was typed), so two accounts read their own figures.
+
+An account that names itself never borrows the CLI's single-account token: the slot is its name, the token
+in the top-level record names the account it was issued to, and a mismatch means it is somebody else's. What
+that prevents is the failure this used to have — every row reading the one shared token, the last account to
+sign in winning, and `ensureToken` then short-circuiting on that unexpired token instead of ever signing in
+as anyone else.
+
+Sign in with the account field filled for each account you add, and they stay apart.
+
 ### What this means for Magpie in practice
 
 The provider card is titled "API key …HohJ", but the quota it shows is **account-level**. So:
@@ -654,7 +671,7 @@ are opt-in and not done.
 node --test test/*.test.mjs
 ```
 
-62 tests cover: mapping pools to windows (including the `used` percentage, `amount`, `limit`, `span`,
+66 tests cover: mapping pools to windows (including the `used` percentage, `amount`, `limit`, `span`,
 `resetsAt`, the dedicated pool's model scoping, and the granted balance); that `limit - amount`
 reproduces the console balance; that a window with an unknown usage is skipped rather than reported as
 zero; degradation when fields are missing; JWT expiry; refresh-token renewal; the error raised when

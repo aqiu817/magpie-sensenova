@@ -121,15 +121,140 @@ export function readCredentials(file = configPath()) {
   }
 }
 
+const isRecord = (v) => Boolean(v) && typeof v === "object" && !Array.isArray(v);
+
 export function writeCredentials(cfg, file = configPath()) {
   try {
     // Internal bookkeeping keys are all `__`-prefixed, and none of them belong
     // in the file: the CLI reads it back, and flags like `__writable` are
     // per-call. Strip by prefix so a new one can never leak by being forgotten.
     const rest = Object.fromEntries(Object.entries(cfg).filter(([k]) => !k.startsWith("__")));
-    fs.writeFileSync(file, `${JSON.stringify({ ...rest, saved_at: new Date().toISOString() }, null, 2)}\n`, {
+    const next = { ...rest, saved_at: new Date().toISOString() };
+    // The per-account slots live in the same file; writing the top-level record must
+    // not erase them.
+    const current = readCredentials(file) ?? {};
+    if (isRecord(current[ACCOUNTS])) next[ACCOUNTS] = current[ACCOUNTS];
+    fs.writeFileSync(file, `${JSON.stringify(next, null, 2)}\n`, {
       mode: 0o600,
     });
+    try {
+      fs.chmodSync(file, 0o600);
+    } catch {
+      /* Windows 上忽略 */
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/* ------------------------------------------------------ 按账号分开的令牌 */
+
+/**
+ * One console token per account lives in the shared credentials file.
+ *
+ * The top-level fields belong to the single-account record the `snquota` CLI writes,
+ * and this plugin leaves them alone. Its own tokens go under `accounts[<slot>]`,
+ * because quota is account-level: one token belongs to one console account, and
+ * holding them in a single top-level record represents only whichever account signed
+ * in last — on screen, several rows showing one and the same figure.
+ */
+const ACCOUNTS = "accounts";
+
+/** What one slot holds: a token and the material to renew it. */
+export const SLOT_FIELDS = [
+  "base",
+  "client_id",
+  "redirect_uri",
+  "access_token",
+  "refresh_token",
+  "expires_at",
+  "id_token",
+  "cookie",
+  "iam_base",
+];
+
+/**
+ * The slot one account's credentials live in.
+ *
+ * A named account uses its name, because every API key on one account shares a single
+ * console token — that is what "the quota is account-level" means. Without a name the
+ * API key's fingerprint stands in: the slot has to be unique, or two rows read one
+ * token and show one account's quota twice.
+ *
+ * @param {{name?: string, key?: string}} [input]
+ * @returns {string|undefined}
+ */
+export function credentialSlotOf({ name, key } = {}) {
+  const named = typeof name === "string" ? name.trim() : "";
+  if (named) return named;
+  const raw = typeof key === "string" ? key.trim() : "";
+  if (!raw) return undefined;
+  return `key:${crypto.createHash("sha256").update(raw).digest("hex").slice(0, 12)}`;
+}
+
+/** The per-slot map, tolerating a file written before slots existed. */
+const accountsOf = (file) => (isRecord(file?.[ACCOUNTS]) ? file[ACCOUNTS] : {});
+
+/** Only the slot fields, so bookkeeping never reaches the file. */
+const recordOf = (cfg) =>
+  Object.fromEntries(SLOT_FIELDS.filter((f) => cfg?.[f] !== undefined).map((f) => [f, cfg[f]]));
+
+/** The top-level single-account record, without the slot map and internal keys. */
+const legacyOf = (file) =>
+  Object.fromEntries(
+    Object.entries(file ?? {}).filter(([k]) => k !== ACCOUNTS && !k.startsWith("__"))
+  );
+
+/**
+ * One account's console credentials, or an empty object.
+ *
+ * The top-level record counts only when it really belongs to this account: a token
+ * names the account it was issued to, so a mismatch means it is someone else's. A
+ * token that yields no name at all — an old file, or an opaque one — is accepted as
+ * this machine's only record, which is the shape every earlier version wrote.
+ *
+ * @param {object|null} file - `readCredentials`'s result.
+ * @param {string|undefined} slot - `credentialSlotOf`'s result.
+ * @returns {object}
+ */
+export function readAccountCredentials(file, slot) {
+  if (!slot) return {};
+  const own = accountsOf(file)[slot];
+  if (isRecord(own)) return own;
+  const legacy = legacyOf(file);
+  if (!legacy.access_token && !legacy.refresh_token) return {};
+  const named = accountNameOf(legacy);
+  if (!named) return legacy;
+  return named === slot ? legacy : {};
+}
+
+/** Whether those credentials came from the CLI's top-level record rather than a slot. */
+export function isLegacyCredentials(file, slot) {
+  if (!slot) return false;
+  if (isRecord(accountsOf(file)[slot])) return false;
+  const legacy = legacyOf(file);
+  if (!legacy.access_token && !legacy.refresh_token) return false;
+  const named = accountNameOf(legacy);
+  return !named || named === slot;
+}
+
+/**
+ * Write one account's credentials into its own slot, leaving the other slots and the
+ * top-level record untouched.
+ */
+export function writeAccountCredentials(cfg, slot, file = configPath()) {
+  if (!slot) return false;
+  try {
+    const current = readCredentials(file) ?? {};
+    const accounts = { ...accountsOf(current) };
+    accounts[slot] = {
+      ...(isRecord(accounts[slot]) ? accounts[slot] : {}),
+      ...recordOf(cfg),
+      saved_at: new Date().toISOString(),
+    };
+    const next = { ...legacyOf(current), [ACCOUNTS]: accounts };
+    fs.writeFileSync(file, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
     try {
       fs.chmodSync(file, 0o600);
     } catch {
