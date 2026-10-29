@@ -565,7 +565,16 @@ fallback flag. Magpie also merges its own models.dev entry for `sensenova`, whic
   `variants` is empty — see [Models](#models).
 - A large `max_tokens` can be refused before it is even attempted: the plan meters throughput per minute,
   and asking for 65,536 tokens answered `429 inference exceeds tpm/rpm limit` on a quiet account. The
-  ceiling above says what the endpoint accepts, not what the plan will serve at any given moment.
+  ceiling above says what the endpoint accepts, not what the plan will serve at any given moment. That
+  `429` carries **no `Retry-After`**, so no client can compute a correct wait — only the plan's own
+  dashboard knows when the allowance returns.
+- **`magpie provider rest-cap` does not work for this provider, and it is a bug in magpie — not a setting
+  you are missing.** Writing `restCap` / `quotaRest` for a plugin provider is accepted and does reach
+  `~/.config/magpie/providers.json`, but it is ignored on read, so a rate-limited account still sits out
+  magpie's defaults: 10 minutes, 30 when rate limited, and 15 minutes for quota. Measured on magpie
+  0.1.2049 against a control — an ordinary custom provider round-trips the same value 6/6, this one 2/6
+  (issue #2). A plugin cannot set it either: the value is dropped in magpie's provider merge, before any
+  plugin code runs. The fix has to land in magpie.
 
 ---
 
