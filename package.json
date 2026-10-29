@@ -15,6 +15,7 @@
     "i18n.mjs",
     "assets/",
     "README.md",
+    "README.en.md",
     "NOTICE.md",
     "LICENSE"
   ],
