@@ -5,6 +5,12 @@
 [Magpie](https://usemagpie.ai) 的 **SenseNova（商量 / 日日新，商汤）** 供应商插件：
 通过 OpenAI 兼容接口接入 Token Plan 的模型，并把控制台里的**积分额度**上报成 Magpie 原生的额度窗口。
 
+> **这是日日新 Token Plan（开发者 API，`platform.sensenova.cn`），不是商汤小浣熊。** 商汤有两套面向
+> 不同人群的服务：本插件接的是给开发者的 Token Plan API；面向普通用户的聊天应用叫**商汤小浣熊**
+> （`xiaohuanxiong.com`），那是另一个服务、另一套账号与积分，由社区的
+> [`@magpie-community/opencode-raccoon-auth`](https://github.com/magpie-community/plugins) 接入。两边的
+> 余额、签到和模型清单互不相通。
+
 ```
 $ magpie quota
 sensenova  通用积分池 · 5 小时窗口   0% used ↻ 2h  ·  Flash-Lite积分池 · 5 小时窗口  22.8% used ↻ 2h

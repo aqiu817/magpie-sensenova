@@ -1,7 +1,7 @@
 {
   "name": "magpie-sensenova",
   "version": "0.1.0",
-  "description": "Magpie provider plugin for SenseNova (商量/日日新): Token Plan models over the OpenAI-compatible API, plus the console's 积分额度 reported as native Magpie quota windows",
+  "description": "Magpie provider plugin for the SenseNova API (商量 / 日日新 Token Plan, platform.sensenova.cn): OpenAI-compatible Token Plan models plus the console's credit quota as native Magpie quota windows. Not the consumer app 商汤小浣熊",
   "type": "module",
   "main": "./index.mjs",
   "exports": {
@@ -29,7 +29,9 @@
     "商汤",
     "日日新",
     "token-plan",
-    "openai-compatible"
+    "openai-compatible",
+    "sensetime",
+    "raccoon"
   ],
   "license": "MIT",
   "repository": {

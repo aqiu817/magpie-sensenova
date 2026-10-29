@@ -6,6 +6,13 @@ A [Magpie](https://usemagpie.ai) provider plugin for **SenseNova** (商量 / 日
 it brings the Token Plan models in over the OpenAI-compatible API, and reports the console's
 **credit quota** as native Magpie quota windows.
 
+> **This is the SenseNova Token Plan (the developer API, `platform.sensenova.cn`) — not SenseTime's
+> Raccoon.** SenseTime runs two services for two audiences: this plugin talks to the Token Plan API for
+> developers; the consumer chat app is **SenseTime Raccoon** (商汤小浣熊, `xiaohuanxiong.com`), which is a
+> different service with its own accounts and credits, served by
+> [`@magpie-community/opencode-raccoon-auth`](https://github.com/magpie-community/plugins). Balances,
+> check-ins and model lists do not carry over between the two.
+
 ```
 $ magpie quota
 sensenova  通用积分池 · 5 小时窗口   0% used ↻ 2h  ·  Flash-Lite积分池 · 5 小时窗口  22.8% used ↻ 2h
