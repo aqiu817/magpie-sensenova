@@ -563,11 +563,19 @@ fallback flag. Magpie also merges its own models.dev entry for `sensenova`, whic
   `/v1/models` fetch replaces them, since only that endpoint knows the new model's numbers.
 - No reasoning-effort selector: the platform exposes `reasoning` as a yes/no feature and nothing more, so
   `variants` is empty — see [Models](#models).
-- A large `max_tokens` can be refused before it is even attempted: the plan meters throughput per minute,
-  and asking for 65,536 tokens answered `429 inference exceeds tpm/rpm limit` on a quiet account. The
-  ceiling above says what the endpoint accepts, not what the plan will serve at any given moment. That
-  `429` carries **no `Retry-After`**, so no client can compute a correct wait — only the plan's own
-  dashboard knows when the allowance returns.
+- **On the Free Plan, most requests to any model other than `sensenova-6.8-flash-lite` come back 429.**
+  SenseTime gives the Free Plan a much smaller usage allowance for every model outside that one, which is
+  metered against its own credit pool — the separate "Flash-Lite pool" the quota report shows. It is a
+  throughput allowance rather than credits running out: the general pool has been reading under 2% used
+  while `429 inference exceeds tpm/rpm limit` came back for `deepseek-flash`.
+- **The plugin does not retry those, deliberately.** The response is handed back to Magpie exactly as it
+  arrived. Retrying would barely help: the allowance runs on a minute-scale window, the `429` carries **no
+  `Retry-After`**, and the same answer comes back after any wait — so a retry loop here would only hold the
+  request open before failing anyway. What Magpie then does with it (resting the provider, trying another)
+  is its own decision.
+- A large `max_tokens` can be refused before it is even attempted, by the same per-minute metering: asking
+  for 65,536 tokens answered `429` on an account whose only traffic was the question. The ceilings in
+  [Models](#models) say what the endpoint accepts, not what the plan will serve at any given moment.
 - **`magpie provider rest-cap` does not work for this provider, and it is a bug in magpie — not a setting
   you are missing.** Writing `restCap` / `quotaRest` for a plugin provider is accepted and does reach
   `~/.config/magpie/providers.json`, but it is ignored on read, so a rate-limited account still sits out
